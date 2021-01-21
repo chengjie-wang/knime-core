@@ -1,6 +1,6 @@
 autoEnabled=true
 eclipse.preferences.version=1
-idePrefixKey=
+idePrefixKey=src
 projectKey=org.knime\:knime-core
 serverId=sonar.knime.com
-sqPrefixKey=org.knime.core.tests
+sqPrefixKey=org.knime.core/src/eclipse

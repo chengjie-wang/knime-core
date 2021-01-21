@@ -1,6 +1,6 @@
 autoEnabled=true
 eclipse.preferences.version=1
-idePrefixKey=
+idePrefixKey=src/org/knime/core/node/workflow/node/adapter
 projectKey=org.knime\:knime-core
 serverId=sonar.knime.com
-sqPrefixKey=org.knime.core.workflow.tests
+sqPrefixKey=org.knime.slf4j.binding/src/main/java/org/slf4j/impl
