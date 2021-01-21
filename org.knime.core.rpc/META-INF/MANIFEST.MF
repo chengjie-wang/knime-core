@@ -14,3 +14,4 @@ Require-Bundle: org.knime.core;bundle-version="[4.3.0,5.0.0)",
  com.fasterxml.jackson.datatype.jackson-datatype-jdk8;bundle-version="[2.11.0,3.0.0)"
 Export-Package: org.knime.core.rpc,
  org.knime.core.rpc.json
+Automatic-Module-Name: org.knime.core.rpc
