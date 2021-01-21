@@ -17,18 +17,18 @@ try {
         'Tycho Build': {
 	        knimetools.defaultTychoBuild('org.knime.update.core')
         },
-        'Integrated Workflowtests': {
-                workflowTests.runIntegratedWorkflowTests(profile: 'test')
-         },
+        /* 'Integrated Workflowtests': { */
+        /*         workflowTests.runIntegratedWorkflowTests(profile: 'test') */
+        /*  }, */
      )
 
-    workflowTests.runTests(
-        dependencies: [
-            repositories: ['knime-core', 'knime-json', 'knime-python', 'knime-filehandling',
-                'knime-datageneration', 'knime-jep', 'knime-js-base', 'knime-cloud', 'knime-database', 'knime-kerberos',
-				'knime-textprocessing', 'knime-dl4j', 'knime-virtual', 'knime-r', 'knime-streaming', 'knime-cluster']
-        ]
-    )
+    /* workflowTests.runTests( */
+    /*     dependencies: [ */
+    /*         repositories: ['knime-core', 'knime-json', 'knime-python', 'knime-filehandling', */
+    /*             'knime-datageneration', 'knime-jep', 'knime-js-base', 'knime-cloud', 'knime-database', 'knime-kerberos', */
+				/* 'knime-textprocessing', 'knime-dl4j', 'knime-virtual', 'knime-r', 'knime-streaming', 'knime-cluster'] */
+    /*     ] */
+    /* ) */
 
 	stage('Sonarqube analysis') {
 		env.lastStage = env.STAGE_NAME
