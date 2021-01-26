@@ -644,14 +644,14 @@ public abstract class WebResourceController {
      * @param validate true, if validation is supposed to be done before applying the values, false otherwise
      * @param useAsDefault true, if the given value map is supposed to be applied as new node defaults (overwrite node
      *            settings), false otherwise (apply temporarily)
-     * @return Null or empty map if validation succeeds, map of errors otherwise
+     * @return empty map if validation succeeds, map of errors otherwise
      */
     @SuppressWarnings({"rawtypes", "unchecked"})
     protected Map<String, ValidationError> loadValuesIntoPageInternal(final Map<String, String> viewContentMap,
         final NodeID subnodeID, final boolean validate, final boolean useAsDefault) {
         if (subnodeID == null) {
             LOGGER.error("No node ID supplied for loading values into wizard page");
-            return null;
+            return Collections.emptyMap();
         }
         WorkflowManager manager = m_manager;
         assert manager.isLockedByCurrentThread();
@@ -724,14 +724,16 @@ public abstract class WebResourceController {
      * @param viewValues the values to validate
      * @param subnodeID the id of the subnode containing the appropriate view nodes
      * @param wizardNodeSet the set of view nodes that the view values correspond to.
-     * @return Null or empty map if validation succeeds, map of errors otherwise
+     * @return an empty map if validation succeeds, map of errors otherwise
+     * @throws IllegalArgumentException if the provided subnode id is <code>null</code>
+     * @throws IllegalStateException if there are no nodes with the provided id prefixes in the page or the provided
+     *             wizard-node-set doesn't contain the required wizard nodes
      */
     @SuppressWarnings({"rawtypes", "unchecked"})
     protected Map<String, ValidationError> validateViewValuesInternal(final Map<String, String> viewValues,
         final NodeID subnodeID, final Map<NodeID, WizardNode> wizardNodeSet) {
         if (subnodeID == null) {
-            LOGGER.error("No node ID supplied for validating view values of wizard page");
-            return null;
+            throw new IllegalArgumentException("No node ID supplied for validating view values of wizard page");
         }
         WorkflowManager manager = m_manager;
         assert manager.isLockedByCurrentThread();

@@ -48,8 +48,13 @@
  */
 package org.knime.core.node.workflow;
 
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 import org.knime.core.node.CanceledExecutionException;
 import org.knime.core.node.ExecutionMonitor;
@@ -67,18 +72,41 @@ import org.knime.core.node.workflow.NodeID.NodeIDSuffix;
  *
  * @author Christian Albrecht, KNIME.com GmbH, Konstanz, Germany
  * @since 3.4
+ *
+ * @noreference This class is not intended to be referenced by clients.
+ * @noinstantiate This class is not intended to be instantiated by clients.
+ * @noextend This class is not intended to be subclassed by clients.
  */
 public class SinglePageWebResourceController extends WebResourceController {
 
     private final NodeID m_nodeID;
+    private final boolean m_isInWizardExecution;
+    private boolean m_isInvalid = false;
 
     /**
-     * @param manager
-     * @param nodeID
+     * Creates a new controller.
+     *
+     * @param manager the workflow this controller is created for
+     * @param nodeID the id of the component representing the page this controller is created for
      */
     public SinglePageWebResourceController(final WorkflowManager manager, final NodeID nodeID) {
+        this(manager, nodeID, false);
+    }
+
+    /**
+     * Creates a new controller.
+     *
+     * @param manager the workflow this controller is created for
+     * @param nodeID the id of the component representing the page this controller is created for
+     * @param isInWizardExecution if <code>true</code> this controller is created for a page which is also part of a
+     *            workflow which is in wizard execution; <code>false</code> if this controller is created for a single
+     *            page which is not part of a workflow in wizard execution
+     */
+    SinglePageWebResourceController(final WorkflowManager manager, final NodeID nodeID,
+        final boolean isInWizardExecution) {
         super(manager);
         m_nodeID = nodeID;
+        m_isInWizardExecution = isInWizardExecution;
     }
 
     /**
@@ -126,12 +154,12 @@ public class SinglePageWebResourceController extends WebResourceController {
      * @param viewContentMap the values to validate
      * @param validate true, if validation is supposed to be done before applying the values, false otherwise
      * @param useAsDefault true, if the given value map is supposed to be applied as new node defaults (overwrite node settings), false otherwise (apply temporarily)
-     * @return Null or empty map if validation succeeds, map of errors otherwise
+     * @return an empty map if validation succeeds, map of errors otherwise
      */
     public Map<String, ValidationError> loadValuesIntoPage(final Map<String, String> viewContentMap, final boolean validate, final boolean useAsDefault) {
         WorkflowManager manager = m_manager;
         try (WorkflowLock lock = manager.lock()) {
-            checkDiscard();
+            doBeforePageChange();
             NodeContext.pushContext(manager);
             try {
                 return loadValuesIntoPageInternal(viewContentMap, m_nodeID, validate, useAsDefault);
@@ -161,7 +189,7 @@ public class SinglePageWebResourceController extends WebResourceController {
         throws ViewRequestHandlingException, InterruptedException, CanceledExecutionException {
         WorkflowManager manager = m_manager;
         try (WorkflowLock lock = manager.lock()) {
-            checkDiscard();
+            doBeforePageChange();
             NodeContext.pushContext(manager);
             try {
                 return processViewRequestInternal(m_nodeID, nodeID, viewRequest, exec);
@@ -183,21 +211,23 @@ public class SinglePageWebResourceController extends WebResourceController {
 
     @Override
     void stateCheckWhenApplyingViewValues(final SubNodeContainer snc) {
-        NodeID id = snc.getID();
-        WorkflowManager parent = snc.getParent();
-        CheckUtils.checkState(parent.canResetNode(id), "Can't reset component%s",
-            parent.hasSuccessorInProgress(id) ? " - some downstream nodes are still executing" : "");
+        if (!m_isInWizardExecution) {
+            NodeID id = snc.getID();
+            WorkflowManager parent = snc.getParent();
+            CheckUtils.checkState(parent.canResetNode(id), "Can't reset component%s",
+                parent.hasSuccessorInProgress(id) ? " - some downstream nodes are still executing" : "");
+        }
     }
 
     /**
      * Validates a given set of serialized view values for the given subnode.
      * @param viewContentMap the values to validate
-     * @return Null or empty map if validation succeeds, map of errors otherwise
+     * @return an empty map if validation succeeds, map of errors otherwise
      */
     public Map<String, ValidationError> validateViewValuesInPage(final Map<String, String> viewContentMap) {
         WorkflowManager manager = m_manager;
         try (WorkflowLock lock = manager.lock()) {
-            checkDiscard();
+            doBeforePageChange();
             NodeContext.pushContext(manager);
             try {
                 return validateViewValuesInternal(viewContentMap, m_nodeID, getWizardNodeSetForVerifiedID(m_nodeID));
@@ -209,13 +239,117 @@ public class SinglePageWebResourceController extends WebResourceController {
 
     /**
      * Triggers workflow execution up until the given subnode.
+     *
+     * @deprecated for real re-execution use {@link #reexecuteSinglePage(Map, boolean, boolean)}.
      */
+    @Deprecated
     public void reexecuteSinglePage() {
         final WorkflowManager manager = m_manager;
         try (WorkflowLock lock = manager.lock()) {
             checkDiscard();
             m_manager.executeUpToHere(m_nodeID);
         }
+    }
+
+    /**
+     * Re-executes the page associated with this controller. I.e. resets, loads the provided values and triggers
+     * workflow execution up until the given page (i.e. component). Note: if validation is desired and it fails, the
+     * page won't be re-executed.
+     *
+     * @param valueMap the values to load before re-execution, a map from {@link NodeIDSuffix} strings to parsed view
+     *            values
+     * @param validate if <code>true</code>, validation will be done before applying the values, otherwise
+     *            <code>false</code>
+     * @param useAsDefault true, if values are supposed to be applied as new defaults, false if applied temporarily
+     *
+     * @return empty map if validation succeeds, map of errors otherwise
+     */
+    public Map<String, ValidationError> reexecuteSinglePage(final Map<String, String> valueMap,
+        final boolean validate, final boolean useAsDefault) {
+        final WorkflowManager manager = m_manager;
+        try (WorkflowLock lock = manager.lock()) {
+            doBeforePageChange();
+            Map<String, ValidationError> validationResult = loadValuesIntoPage(valueMap, validate, useAsDefault);
+            if (validationResult.isEmpty()) {
+                m_manager.executeUpToHere(m_nodeID);
+            }
+            return validationResult;
+        }
+    }
+
+    /**
+     * Re-executes the page associated with this controller. I.e. resets, loads the provided values and triggers
+     * workflow execution up until the given page (i.e. component). Note: if validation is desired and it fails, the
+     * page won't be re-executed.
+     *
+     * @param viewToReset the view on the wizard page that shall be reset
+     * @param valueMap the values to load before re-execution, a map from {@link NodeIDSuffix} strings to parsed view
+     *            values
+     * @param validate if <code>true</code>, validation will be done before applying the values, otherwise
+     *            <code>false</code>
+     * @throws IllegalArgumentException if the provided view node-id is not part of the wizard page
+     *
+     * @return empty map if validation succeeds, map of errors otherwise
+     */
+    public Map<String, ValidationError> reexecuteSinglePage(final NodeIDSuffix viewToReset,
+        final Map<String, String> valueMap, final boolean validate) {
+        try (WorkflowLock lock = m_manager.lock()) {
+            doBeforePageChange();
+            WorkflowManager pageWfm = ((SubNodeContainer)m_manager.getNodeContainer(m_nodeID)).getWorkflowManager();
+            NodeContainer nodeToReset = pageWfm.getNodeContainer(viewToReset.prependParent(pageWfm.getID()));
+            Collection<NodeContainer> nodesToBeReexecuted = getNodesToBeReexecuted(nodeToReset);
+            Map<String, String> filteredViewValues =
+                filterViewValues(nodesToBeReexecuted, m_manager.getID(), valueMap);
+            Map<String, ValidationError> validationResult = loadValuesIntoPage(filteredViewValues, validate, false);
+            if (validationResult.isEmpty()) {
+                m_manager.executeUpToHere(m_nodeID);
+            }
+            return validationResult;
+        }
+    }
+
+    private static Collection<NodeContainer> getNodesToBeReexecuted(final NodeContainer nodeToReset) {
+        return nodeToReset.getParent().getNodeContainers(Collections.singleton(nodeToReset.getID()), nc -> false, false,
+            true);
+    }
+
+    private static Map<String, String> filterViewValues(final Collection<NodeContainer> nodesToBeReexecuted,
+        final NodeID parentID, final Map<String, String> viewValues) {
+        HashSet<String> ids =
+            nodesToBeReexecuted.stream().map(nc -> NodeIDSuffix.create(parentID, nc.getID()).toString())
+                .collect(HashSet::new, HashSet::add, HashSet::addAll);
+        return viewValues.entrySet().stream().filter(e -> ids.contains(e.getKey()))
+            .collect(Collectors.toMap(Entry::getKey, Entry::getValue));
+    }
+
+    private void doBeforePageChange() {
+        checkDiscard();
+        if (m_isInWizardExecution) {
+            if (m_isInvalid) {
+                throw new IllegalStateException(
+                    "Invalid single page controller. Page doesn't match with the current page of the associated wizard executor.");
+            }
+            if (isPageReexecutionInProgress()) {
+                throw new IllegalStateException("Page can't be re-executed: execution in progress");
+            }
+        }
+    }
+
+    /**
+     * Determines whether the controlled page is currently in re-execution.
+     *
+     * @return <code>true</code> if the page is in re-execution, otherwise <code>false</code>
+     */
+    boolean isPageReexecutionInProgress() {
+        return m_manager.getNodeContainer(m_nodeID).getNodeContainerState().isExecutionInProgress();
+    }
+
+    /**
+     * Invalidates the controller. Only has an effect if the controller is in a workflow which is in wizard execution
+     * (see {@link #SinglePageWebResourceController(WorkflowManager, NodeID, boolean)}.
+     */
+    void invalidate() {
+        m_isInvalid = true;
     }
 
 }

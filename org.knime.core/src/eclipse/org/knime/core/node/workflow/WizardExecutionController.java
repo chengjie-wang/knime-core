@@ -98,6 +98,8 @@ public final class WizardExecutionController extends WebResourceController imple
      */
     private final List<NodeID> m_waitingSubnodes;
 
+    private SinglePageWebResourceController m_singlePageController = null;
+
     private boolean m_hasExecutionStarted = false;
 
     private final Map<String, String> m_additionalProperties;
@@ -141,16 +143,20 @@ public final class WizardExecutionController extends WebResourceController imple
     @Override
     public void checkHaltingCriteria(final NodeID source) {
         assert m_manager.isLockedByCurrentThread();
-        if (m_waitingSubnodes.remove(source)) {
-            // trick to handle re-execution of SubNodes properly: when the node is already
-            // in the list it was just re-executed and we don't add it to the list of halted
-            // nodes but removed it instead. If we see it again then it is part of a loop and
-            // we will add it again).
-            return;
-        }
-        if (isSubnodeViewAvailable(source)) {
-            // add to the list so we can later avoid queuing of successors!
-            m_waitingSubnodes.add(source);
+        // as long as there is a 'single page controller' set, we just keep re-executing the current page and
+        // leave the list of 'waitingSubnodes' untouched
+        if (m_singlePageController == null) {
+            if (m_waitingSubnodes.remove(source)) {
+                // trick to handle re-execution of SubNodes properly: when the node is already
+                // in the list it was just re-executed and we don't add it to the list of halted
+                // nodes but removed it instead. If we see it again then it is part of a loop and
+                // we will add it again).
+                return;
+            }
+            if (isSubnodeViewAvailable(source)) {
+                // add to the list so we can later avoid queuing of successors!
+                m_waitingSubnodes.add(source);
+            }
         }
     }
 
@@ -203,7 +209,8 @@ public final class WizardExecutionController extends WebResourceController imple
         try (WorkflowLock lock = manager.lock()) {
             NodeContext.pushContext(manager);
             try {
-                CheckUtils.checkState(hasCurrentWizardPageInternal(true), "No current wizard page");
+                CheckUtils.checkState(hasCurrentWizardPageInternal(true),
+                    "No current wizard page");
                 return getWizardPageInternal(m_waitingSubnodes.get(0));
             } finally {
                 NodeContext.removeLastContext();
@@ -269,31 +276,36 @@ public final class WizardExecutionController extends WebResourceController imple
 
     private boolean hasCurrentWizardPageInternal(final boolean checkExecuted) {
         assert m_manager.isLockedByCurrentThread();
+
+        // not halted at a page
         if (m_waitingSubnodes.isEmpty()) {
             return false;
-        } else if (checkExecuted && !areAllNodesExecuted(m_waitingSubnodes, m_manager)) {
-            return false;
-        } else if (!m_promptedSubnodeIDSuffixes.isEmpty()) {
-            //check whether the 'waiting subnode' is the one currently re-executing
-            //i.e., the one already prompted
-            //if so -> no current page
-            return !toNodeID(m_promptedSubnodeIDSuffixes.peek()).equals(m_waitingSubnodes.get(0));
-        } else {
-            return true;
         }
 
-//        if (m_promptedSubnodeIDSuffixes.isEmpty()) {
-//            // stepNext not called
-//            return false;
-//        } else if (m_promptedSubnodeIDSuffixes.peek() == ALL_COMPLETED) {
-//            // all done - result page to be shown
-//            return false;
-//        }
-//        return true;
+        // if there is 'single page controller' associated with the current page,
+        // we allow the current wizard page to be partially executed or still executing
+        // -> it takes precedence over the 'checkExecuted' parameter
+        if (!isSinglePageControllerSet() && checkExecuted
+            && !areAllNodesExecuted(m_waitingSubnodes, m_manager)) {
+            return false;
+        }
+
+        // check whether the 'waiting subnode' is the one currently re-executing
+        // i.e., the one already prompted
+        // if so -> no current page
+        if (!m_promptedSubnodeIDSuffixes.isEmpty()) {
+            return !toNodeID(m_promptedSubnodeIDSuffixes.peek()).equals(m_waitingSubnodes.get(0));
+        }
+
+        return true;
     }
 
     private static boolean areAllNodesExecuted(final List<NodeID> nodes, final WorkflowManager wfm) {
         return nodes.stream().map(wfm::getNodeContainer).allMatch(nc -> nc.getNodeContainerState().isExecuted());
+    }
+
+    private boolean isSinglePageControllerSet() {
+        return m_singlePageController != null;
     }
 
     /** Continues the execution and executes up to, incl., the next subnode awaiting input. If no such subnode exists
@@ -301,7 +313,7 @@ public final class WizardExecutionController extends WebResourceController imple
     public void stepFirst() {
         final WorkflowManager manager = m_manager;
         try (WorkflowLock lock = manager.lock()) {
-            checkDiscard();
+            doBeforePageChange(true);
             NodeContext.pushContext(manager);
             try {
                 stepFirstInternal();
@@ -319,13 +331,16 @@ public final class WizardExecutionController extends WebResourceController imple
     }
 
     /**
-     * @param viewContentMap
-     * @return
+     * Tries to load a map of view values to all appropriate views contained in current wizard page.
+     *
+     * @param viewContentMap the values to be load, a map from node suffices to value
+     * @throws IllegalStateException if there is no current wizard page or a single page re-execution is in progress
+     * @return empty map if validation succeeds, map of errors otherwise
      */
     public Map<String, ValidationError> loadValuesIntoCurrentPage(final Map<String, String> viewContentMap) {
         WorkflowManager manager = m_manager;
         try (WorkflowLock lock = manager.lock()) {
-            checkDiscard();
+            doBeforePageChange(true);
             NodeContext.pushContext(manager);
             try {
                 CheckUtils.checkState(hasCurrentWizardPageInternal(true), "No current wizard page");
@@ -367,10 +382,15 @@ public final class WizardExecutionController extends WebResourceController imple
         }
     }
 
+    /**
+     * Executes to the next wizard page (which includes the re-execution the current wizard page).
+     *
+     * @throws IllegalStateException if there is no current wizard page or a single page re-execution is in progress
+     */
     public void stepNext() {
         final WorkflowManager manager = m_manager;
         try (WorkflowLock lock = manager.lock()) {
-            checkDiscard();
+            doBeforePageChange(true);
             NodeContext.pushContext(manager);
             try {
                 stepNextInternal();
@@ -404,6 +424,11 @@ public final class WizardExecutionController extends WebResourceController imple
         m_manager.executeAll();
     }
 
+    /**
+     * Whether there is a previous wizard page. If <code>true</code> {@link #stepBack()} can be called.
+     *
+     * @return <code>true</code> if there is are previous page to return to, otherwise <code>false</code>
+     */
     public boolean hasPreviousWizardPage() {
         WorkflowManager manager = m_manager;
         try (WorkflowLock lock = manager.lock()) {
@@ -423,10 +448,16 @@ public final class WizardExecutionController extends WebResourceController imple
     }
 
 
+    /**
+     * Resets the workflow to the previous page, i.e. resets all successors of the previous page component. Does not
+     * cancel the workflow if execution is still in progress.
+     *
+     * @throws IllegalStateException if there is no previous page (see {@link #hasPreviousWizardPage()})
+     */
     public void stepBack() {
         WorkflowManager manager = m_manager;
         try (WorkflowLock lock = manager.lock()) {
-            checkDiscard();
+            doBeforePageChange(false);
             NodeContext.pushContext(manager);
             try {
                 stepBackInternal();
@@ -466,6 +497,25 @@ public final class WizardExecutionController extends WebResourceController imple
      */
     public void removeProperty(final String key) {
         m_additionalProperties.remove(key);
+    }
+
+    /**
+     * Returns (and possibly creates) a single page controller for the current wizard page. It allows one to (partially)
+     * re-execute the current page. The returned controller will remain valid as long as the wizard execution stays at
+     * the very page it has been created from. If a controller is retrieved and the page changed afterwards (e.g. via
+     * {@link #stepNext()}) a , e.g.,
+     * {@link SinglePageWebResourceController#reexecuteSinglePage(NodeIDSuffix, Map, boolean)}-call on the previously
+     * returned controller will fail.
+     *
+     * @return the single page controller for the current wizard page (either a cached instance or a newly created one
+     *         if there has been one already)
+     * @throws IllegalStateException if there is no current wizard page
+     */
+    public SinglePageWebResourceController getSinglePageControllerForCurrentPage() {
+        if (m_singlePageController == null) {
+            m_singlePageController = new SinglePageWebResourceController(m_manager, getCurrentWizardPageNodeID(), true);
+        }
+        return m_singlePageController;
     }
 
     private void stepBackInternal() {
@@ -523,6 +573,21 @@ public final class WizardExecutionController extends WebResourceController imple
         final InternalNodeContainerState destNCState = downstreamNC.getInternalState();
         CheckUtils.checkState(destNCState.isHalted() && !destNCState.isExecuted(), "Downstream nodes of "
                 + "Component %s must not be in execution/executed (node %s)", snc.getNameWithID(), downstreamNC);
+    }
+
+    private void doBeforePageChange(final boolean throwExceptionIfSinglePageReexecutionInProgress) {
+        checkDiscard();
+        if (m_singlePageController != null) {
+            if (throwExceptionIfSinglePageReexecutionInProgress && isSinglePageReexetionInProgress()) {
+                throw new IllegalStateException("Action not allowed. Single page re-execution is in progress.");
+            }
+            m_singlePageController.invalidate();
+            m_singlePageController = null;
+        }
+    }
+
+    private boolean isSinglePageReexetionInProgress() {
+        return m_singlePageController != null && m_singlePageController.isPageReexecutionInProgress();
     }
 
 }
