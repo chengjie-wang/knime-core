@@ -53,15 +53,15 @@ import java.io.InputStream;
 import java.net.URI;
 import java.net.URL;
 
-import javax.activation.FileTypeMap;
-import javax.activation.MimetypesFileTypeMap;
-
 import org.eclipse.core.runtime.Platform;
 import org.knime.core.util.pathresolve.ResolverUtil;
 import org.knime.core.util.pathresolve.URIToFileResolve;
 import org.osgi.framework.Bundle;
 import org.osgi.framework.BundleActivator;
 import org.osgi.framework.BundleContext;
+
+import jakarta.activation.FileTypeMap;
+import jakarta.activation.MimetypesFileTypeMap;
 
 /**
  * Plugin class that is initialized when the plugin project is started. It will
